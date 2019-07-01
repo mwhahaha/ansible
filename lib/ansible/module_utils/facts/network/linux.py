@@ -96,6 +96,61 @@ class LinuxNetwork(Network):
                         interface[v]['gateway'] = words[i + 1]
         return interface['v4'], interface['v6']
 
+    def get_interface_fs_details(self, device, path):
+        interface = {'device': device}
+        if os.path.exists(os.path.join(path, 'address')):
+            macaddress = get_file_content(os.path.join(path, 'address'), default='')
+            if macaddress and macaddress != '00:00:00:00:00:00':
+                interface['macaddress'] = macaddress
+        if os.path.exists(os.path.join(path, 'mtu')):
+            interface['mtu'] = int(get_file_content(os.path.join(path, 'mtu')))
+        if os.path.exists(os.path.join(path, 'operstate')):
+            interface['active'] = get_file_content(os.path.join(path, 'operstate')) != 'down'
+        if os.path.exists(os.path.join(path, 'device', 'driver', 'module')):
+            interface['module'] = os.path.basename(os.path.realpath(os.path.join(path, 'device', 'driver', 'module')))
+        if os.path.exists(os.path.join(path, 'type')):
+            _type = get_file_content(os.path.join(path, 'type'))
+            interface['type'] = self.INTERFACE_TYPE.get(_type, 'unknown')
+        if os.path.exists(os.path.join(path, 'bridge')):
+            interface['type'] = 'bridge'
+            interface['interfaces'] = [os.path.basename(b) for b in glob.glob(os.path.join(path, 'brif', '*'))]
+            if os.path.exists(os.path.join(path, 'bridge', 'bridge_id')):
+                interface['id'] = get_file_content(os.path.join(path, 'bridge', 'bridge_id'), default='')
+            if os.path.exists(os.path.join(path, 'bridge', 'stp_state')):
+                interface['stp'] = get_file_content(os.path.join(path, 'bridge', 'stp_state')) == '1'
+        if os.path.exists(os.path.join(path, 'bonding')):
+            interface['type'] = 'bonding'
+            interface['slaves'] = get_file_content(os.path.join(path, 'bonding', 'slaves'), default='').split()
+            interface['mode'] = get_file_content(os.path.join(path, 'bonding', 'mode'), default='').split()[0]
+            interface['miimon'] = get_file_content(os.path.join(path, 'bonding', 'miimon'), default='').split()[0]
+            interface['lacp_rate'] = get_file_content(os.path.join(path, 'bonding', 'lacp_rate'), default='').split()[0]
+            primary = get_file_content(os.path.join(path, 'bonding', 'primary'))
+            if primary:
+                interface['primary'] = primary
+                path = os.path.join(path, 'bonding', 'all_slaves_active')
+                if os.path.exists(path):
+                    interface['all_slaves_active'] = get_file_content(path) == '1'
+        if os.path.exists(os.path.join(path, 'bonding_slave')):
+            interface['perm_macaddress'] = get_file_content(os.path.join(path, 'bonding_slave', 'perm_hwaddr'), default='')
+        if os.path.exists(os.path.join(path, 'device')):
+            interface['pciid'] = os.path.basename(os.readlink(os.path.join(path, 'device')))
+        if os.path.exists(os.path.join(path, 'speed')):
+            speed = get_file_content(os.path.join(path, 'speed'))
+            if speed is not None:
+                interface['speed'] = int(speed)
+
+        # Check whether an interface is in promiscuous mode
+        if os.path.exists(os.path.join(path, 'flags')):
+            promisc_mode = False
+            # The second byte indicates whether the interface is in promiscuous mode.
+            # 1 = promisc
+            # 0 = no promisc
+            data = int(get_file_content(os.path.join(path, 'flags')), 16)
+            promisc_mode = (data & 0x0100 > 0)
+            interface['promisc'] = promisc_mode
+
+        return interface
+
     def get_interfaces_info(self, ip_path, default_ipv4, default_ipv6):
         interfaces = {}
         ips = dict(
@@ -110,58 +165,7 @@ class LinuxNetwork(Network):
             if not os.path.isdir(path):
                 continue
             device = os.path.basename(path)
-            interfaces[device] = {'device': device}
-            if os.path.exists(os.path.join(path, 'address')):
-                macaddress = get_file_content(os.path.join(path, 'address'), default='')
-                if macaddress and macaddress != '00:00:00:00:00:00':
-                    interfaces[device]['macaddress'] = macaddress
-            if os.path.exists(os.path.join(path, 'mtu')):
-                interfaces[device]['mtu'] = int(get_file_content(os.path.join(path, 'mtu')))
-            if os.path.exists(os.path.join(path, 'operstate')):
-                interfaces[device]['active'] = get_file_content(os.path.join(path, 'operstate')) != 'down'
-            if os.path.exists(os.path.join(path, 'device', 'driver', 'module')):
-                interfaces[device]['module'] = os.path.basename(os.path.realpath(os.path.join(path, 'device', 'driver', 'module')))
-            if os.path.exists(os.path.join(path, 'type')):
-                _type = get_file_content(os.path.join(path, 'type'))
-                interfaces[device]['type'] = self.INTERFACE_TYPE.get(_type, 'unknown')
-            if os.path.exists(os.path.join(path, 'bridge')):
-                interfaces[device]['type'] = 'bridge'
-                interfaces[device]['interfaces'] = [os.path.basename(b) for b in glob.glob(os.path.join(path, 'brif', '*'))]
-                if os.path.exists(os.path.join(path, 'bridge', 'bridge_id')):
-                    interfaces[device]['id'] = get_file_content(os.path.join(path, 'bridge', 'bridge_id'), default='')
-                if os.path.exists(os.path.join(path, 'bridge', 'stp_state')):
-                    interfaces[device]['stp'] = get_file_content(os.path.join(path, 'bridge', 'stp_state')) == '1'
-            if os.path.exists(os.path.join(path, 'bonding')):
-                interfaces[device]['type'] = 'bonding'
-                interfaces[device]['slaves'] = get_file_content(os.path.join(path, 'bonding', 'slaves'), default='').split()
-                interfaces[device]['mode'] = get_file_content(os.path.join(path, 'bonding', 'mode'), default='').split()[0]
-                interfaces[device]['miimon'] = get_file_content(os.path.join(path, 'bonding', 'miimon'), default='').split()[0]
-                interfaces[device]['lacp_rate'] = get_file_content(os.path.join(path, 'bonding', 'lacp_rate'), default='').split()[0]
-                primary = get_file_content(os.path.join(path, 'bonding', 'primary'))
-                if primary:
-                    interfaces[device]['primary'] = primary
-                    path = os.path.join(path, 'bonding', 'all_slaves_active')
-                    if os.path.exists(path):
-                        interfaces[device]['all_slaves_active'] = get_file_content(path) == '1'
-            if os.path.exists(os.path.join(path, 'bonding_slave')):
-                interfaces[device]['perm_macaddress'] = get_file_content(os.path.join(path, 'bonding_slave', 'perm_hwaddr'), default='')
-            if os.path.exists(os.path.join(path, 'device')):
-                interfaces[device]['pciid'] = os.path.basename(os.readlink(os.path.join(path, 'device')))
-            if os.path.exists(os.path.join(path, 'speed')):
-                speed = get_file_content(os.path.join(path, 'speed'))
-                if speed is not None:
-                    interfaces[device]['speed'] = int(speed)
-
-            # Check whether an interface is in promiscuous mode
-            if os.path.exists(os.path.join(path, 'flags')):
-                promisc_mode = False
-                # The second byte indicates whether the interface is in promiscuous mode.
-                # 1 = promisc
-                # 0 = no promisc
-                data = int(get_file_content(os.path.join(path, 'flags')), 16)
-                promisc_mode = (data & 0x0100 > 0)
-                interfaces[device]['promisc'] = promisc_mode
-
+            interfaces[device] = self.get_interface_fs_details(device, path)
             # TODO: determine if this needs to be in a nested scope/closure
             def parse_ip_output(output, secondary=False):
                 for line in output.splitlines():
